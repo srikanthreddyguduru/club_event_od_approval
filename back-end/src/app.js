@@ -1,0 +1,25 @@
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import authRoutes from './routes/authRoutes.js';
+import eventRoutes from './routes/eventRoutes.js';
+import requestRoutes from './routes/requestRoutes.js';
+import { errorHandler, notFound } from './middleware/errorHandler.js';
+
+const app = express();
+app.disable('x-powered-by');
+app.use(helmet());
+app.use(cors({ origin: process.env.CLIENT_ORIGIN?.split(',').map(s => s.trim()) || false }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
+app.use('/api/auth/login', rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false }));
+app.get('/api/health', (req, res) => res.json({ data: { status: 'ok', service: 'club-event-od-api' } }));
+app.use('/api/auth', authRoutes);
+app.use('/api/events', eventRoutes);
+app.use('/api/requests', requestRoutes);
+app.use(notFound);
+app.use(errorHandler);
+export default app;

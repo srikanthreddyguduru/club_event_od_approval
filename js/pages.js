@@ -16,9 +16,9 @@ function renderNav() {
           .join("")}`,
     )
     .join("");
-  $("#roleLabel").textContent = role;
+  $("#roleLabel").textContent = apiMode ? role : `${role} · Preview`;
   $("#userName").textContent = who();
-  $("#userMeta").textContent = people[role][1];
+  $("#userMeta").textContent = currentUser ? [currentUser.department, currentUser.classSection].filter(Boolean).join(" · ") || "College account" : people[role]?.[1] || "College account";
   $("#avatar").textContent = initials(who());
   $("#topAvatar").textContent = initials(who());
   $("#pageCrumb").textContent = page;
@@ -43,16 +43,22 @@ function reqrow(r) {
 }
 // Role dashboards and page content.
 function dashboard() {
-  let a = mine(),
+  let a = role === "Admin" ? data.requests : mine(),
     pending = a.filter((r) => r.status.startsWith("Pending"));
   let desc =
     role === "Student"
-      ? "Your events, OD requests and attendance in one place."
+      ? "Your event registrations, OD decisions and recorded attendance."
       : role === "Event Coordinator"
-        ? "Manage inter-college events and follow their OD requests."
+        ? "Publish inter-college events and follow each registered student’s OD progress."
         : role === "DEO"
-          ? "Record attendance for requests that have completed approval."
-          : "Review requests assigned to you and keep decisions moving.";
+          ? "Record attendance only after the required approvals are complete."
+          : role === "Class In-charge"
+            ? "Check event details, proof and missed class sessions for your assigned class."
+            : role === "Department Coordinator"
+              ? "Review requests after the Class In-charge has recorded a decision."
+              : role === "Director"
+                ? "Complete the final review before an approved request reaches the DEO."
+                : "Manage college accounts and inspect workflow records.";
   let act =
     role === "Student"
       ? '<button class="btn" data-page="New Outside-College Request">＋ New OD request</button>'
@@ -81,7 +87,7 @@ function dashboard() {
         ]
       : role === "Event Coordinator"
         ? [
-            ["Active events", data.events.length, "Managed by you"],
+            ["Published events", data.events.filter(e => !e.status || e.status === "published").length, "Managed by you"],
             [
               "Registrations",
               data.events.reduce((n, e) => n + e.registered, 0),
@@ -106,9 +112,16 @@ function dashboard() {
               "Completed",
             ],
           ]
-        : [
+        : role === "Admin"
+          ? [
+              ["Events", data.events.length, "In the college workspace"],
+              ["OD requests", data.requests.length, "Workflow records"],
+              ["Awaiting review", data.requests.filter(r => r.status.startsWith("Pending")).length, "Across approval stages"],
+              ["Attendance recorded", data.requests.filter(r => r.status === "Attendance Recorded").length, "Completed records"],
+            ]
+          : [
             ["Awaiting your review", pending.length, "Current queue", "accent"],
-            ["Requests in system", data.requests.length, "All request records"],
+            ["Requests in this view", data.requests.length, "Limited to your access"],
             [
               "Returned for correction",
               data.requests.filter(
@@ -134,30 +147,24 @@ function dashboard() {
             ? "OD Review Queue"
             : role === "Department Coordinator"
               ? "Department Review Queue"
-              : "Director Review Queue";
+              : role === "Admin" ? "Profile" : "Director Review Queue";
   let feed =
     role === "Student"
       ? a
       : role === "Event Coordinator"
         ? data.requests.filter((r) => r.type === "Inter-college")
         : a;
-  return `${head(role === "Student" ? "Good morning, Ananya" : `Good morning, ${who().split(" ")[0]}`, desc, act)}${stats(c)}<div class="grid-two"><section class="panel"><div class="panel-head"><div><h2>${role === "Student" ? "Your OD requests" : role === "Event Coordinator" ? "Recent event requests" : role === "DEO" ? "Ready for attendance" : "Requests to review"}</h2><p>${role === "Student" ? "Follow each request to its outcome." : "Requests and current workflow status"}</p></div><button class="link-btn" data-page="${
-    dest
-  }">View all →</button></div><div class="panel-body row-list">${feed.slice(0, 5).map(reqrow).join("") || '<div class="empty">Nothing needs attention right now.</div>'}</div></section><section class="panel"><div class="panel-head"><div><h2>Approval path</h2><p>Inter-college OD requests</p></div></div><div class="panel-body"><div class="approval-line">${[
-    "Class In-charge",
-    "Department Coord.",
-    "Director",
-    "DEO",
-  ]
-    .map(
-      (x, i) =>
-        `<div class="step ${
-          i === 0 ? "current" : ""
-        }"><div class="step-dot">${i + 1}</div>${x}</div>`,
-    )
-    .join(
-      "",
-    )}</div><div class="notice">Outside-college requests follow the first two reviews, certificate upload, Director review, then DEO attendance entry. Open a request to view its specific timeline.</div><div class="activity-item"><div class="activity-mark"></div><div><strong>Role: ${role}</strong><small>Only actions at the assigned workflow step are available.</small></div></div><div class="activity-item"><div class="activity-mark"></div><div><strong>Attendance is recorded by DEO</strong><small>Students see attendance after it is entered.</small></div></div></div></section></div>${role === "Student" ? `<div style="height:16px"></div><section class="panel"><div class="panel-head"><div><h2>Upcoming inter-college events</h2><p>Events open to eligible students</p></div><button class="link-btn" data-page="Inter-College Events">Browse events →</button></div><div class="panel-body row-list">${data.events.slice(0, 2).map(eventRow).join("")}</div></section>` : ""}`;
+  let viewAll = role === "Admin" ? "" : `<button class="link-btn" data-page="${esc(dest)}">View all →</button>`;
+  const guidance = {
+    Student: { title: "Two event routes", detail: "Inter-college: register → attend → upload certificate → three reviews → DEO. Outside-college: submit plan and registration proof → Class In-charge → Department Coordinator → attend and upload certificate → Director → DEO." },
+    "Event Coordinator": { title: "Event handoff", detail: "Set the eligible departments and classes before publishing. Registrations create a linked OD request; review progress appears under Event Registrations." },
+    "Class In-charge": { title: "Your review step", detail: "Outside-college requests arrive with registration proof and proposed class sessions. Inter-college requests arrive after the student uploads a certificate." },
+    "Department Coordinator": { title: "Department review", detail: "Check the Class In-charge decision and comments. Outside-college requests return to the student for a certificate only after this approval." },
+    Director: { title: "Final approval", detail: "Review the submitted evidence. Outside-college requests reach you only after the student adds the post-event certificate." },
+    DEO: { title: "Attendance entry", detail: "Requests appear here after all required approvals. Select the applicable class sessions and save to add them to the student’s record." },
+    Admin: { title: "Account and access setup", detail: "Create student and staff accounts through the admin user API. Assign each Class In-charge to the matching department and class section." }
+  }[role];
+  return `${head(`Good morning, ${who().split(" ")[0]}`, desc, act)}${stats(c)}<div class="grid-two"><section class="panel"><div class="panel-head"><div><h2>${role === "Student" ? "Your OD requests" : role === "Event Coordinator" ? "Recent event requests" : role === "DEO" ? "Ready for attendance" : role === "Admin" ? "Workflow records" : "Requests to review"}</h2><p>${role === "Student" ? "Follow each request to its outcome." : role === "Admin" ? "Records visible to the administrator." : "Requests available in your assigned scope."}</p></div>${viewAll}</div><div class="panel-body row-list">${feed.slice(0, 5).map(reqrow).join("") || '<div class="empty">Nothing needs attention right now.</div>'}</div></section><section class="panel"><div class="panel-head"><div><h2>${esc(guidance.title)}</h2><p>${apiMode ? "Workflow guidance" : "Preview workflow"}</p></div></div><div class="panel-body"><p class="guide-copy">${esc(guidance.detail)}</p>${role === "Student" ? '<div class="notice">A returned request stays open for correction. A rejection includes the reviewer’s reason.</div>' : ""}</div></section></div>${role === "Student" ? `<div style="height:16px"></div><section class="panel"><div class="panel-head"><div><h2>Upcoming inter-college events</h2><p>Events open to eligible students</p></div><button class="link-btn" data-page="Inter-College Events">Browse events →</button></div><div class="panel-body row-list">${data.events.slice(0, 2).map(eventRow).join("")}</div></section>` : ""}`;
 }
 function eventRow(e) {
   return `<div class="list-row"><div class="event-date"><strong>${e.start.slice(8, 10)}</strong><span>${new Date(e.start + "T12:00:00").toLocaleString("en", { month: "short" })}</span></div><div class="row-main"><strong>${esc(e.name)}</strong><small>${esc(e.host)} · ${esc(e.venue)}</small></div><button class="btn secondary small" data-event="${
@@ -166,8 +173,8 @@ function eventRow(e) {
 }
 function eventList() {
   return `${head("Inter-College Events", "Browse events available to eligible students. Upload the certificate after attending.")}<div class="toolbar"><input class="search" id="eventSearch" placeholder="Search events or host college…" value="${esc(
-    search,
-  )}"><select class="filter" id="eventFilter"><option>All</option><option>Technology</option><option>Cultural</option><option>Engineering</option></select></div><div class="event-grid">${
+  search,
+  )}"><select class="filter" id="eventFilter"><option>All</option><option>Technology</option><option>Cultural</option><option>Engineering</option><option>Academic</option><option>Other</option></select></div><div class="event-grid">${
     data.events
       .filter(
         (e) =>
@@ -202,7 +209,9 @@ function table(rows, review = false) {
 }
 function requestsPage(review = false, history = false) {
   let rows = history
-    ? data.requests.filter((r) => r.history.some((h) => h[0].includes(role)))
+    ? data.requests.filter((r) => apiMode
+      ? (r.decisions || []).some(d => d.stage === ({ "Class In-charge": "class_incharge", "Department Coordinator": "department_coordinator", Director: "director" }[role]))
+      : r.history.some((h) => h[0].includes(role)))
     : role === "Student"
       ? data.requests.filter((r) => r.student === who())
       : role === "Event Coordinator"
@@ -233,10 +242,10 @@ function requestsPage(review = false, history = false) {
   )}"><select class="filter" id="typeFilter"><option>All</option><option>Inter-college</option><option>Outside-college</option><option>Attendance Recorded</option><option>Rejected</option><option>Returned for Correction</option></select></div>${table(rows, review)}`;
 }
 function createEvent() {
-  return `${head("Create inter-college event", "Publish an event for eligible students to view and register.")}<div class="panel"><div class="panel-head"><div><h2>Event details</h2><p>Fields marked * are required.</p></div></div><div class="panel-body"><form id="eventForm"><div class="form-grid"><div class="form-field"><label>Event name *</label><input name="name" required></div><div class="form-field"><label>Host college *</label><input name="host" required></div><div class="form-field"><label>Start date *</label><input name="start" type="date" required></div><div class="form-field"><label>End date *</label><input name="end" type="date" required></div><div class="form-field"><label>Venue *</label><input name="venue" required></div><div class="form-field"><label>Category</label><select name="category"><option>Technology</option><option>Cultural</option><option>Engineering</option><option>Academic</option><option>Other</option></select></div><div class="form-field full"><label>Registration details *</label><textarea name="registration" required></textarea></div><div class="form-field full"><label>Eligible students or departments *</label><input name="eligibility" required></div></div><div class="form-actions"><button class="btn secondary" type="reset">Clear</button><button class="btn" type="submit">Publish event</button></div></form></div></div>`;
+  return `${head("Create inter-college event", "Publish the event details students need before they register.")}<div class="panel"><div class="panel-head"><div><h2>Event details</h2><p>Fields marked * are required.</p></div></div><div class="panel-body"><form id="eventForm"><div class="form-grid"><div class="form-field"><label>Event name *</label><input name="name" required maxlength="180"></div><div class="form-field"><label>Host college *</label><input name="host" required maxlength="180"></div><div class="form-field"><label>Start date *</label><input name="start" type="date" required></div><div class="form-field"><label>End date *</label><input name="end" type="date" required></div><div class="form-field"><label>Venue *</label><input name="venue" required maxlength="250"></div><div class="form-field"><label>Category</label><select name="category"><option>Technology</option><option>Cultural</option><option>Engineering</option><option>Academic</option><option>Other</option></select></div><div class="form-field full"><label>Registration details *</label><textarea name="registration" required maxlength="2000" placeholder="Registration link, deadline, fee, or instructions"></textarea></div><div class="form-field full"><label>Eligible departments</label><select name="departments" multiple size="4"><option>CSE</option><option>ACSE</option><option>DS</option><option>CS</option><option>ECE</option><option>PHARMACY</option><option>MBA</option><option>BBA</option><option>BCA</option></select><span class="hint">Leave unselected if students from every department are eligible. Hold Ctrl or Command to select more than one.</span></div><div class="form-field full"><label>Eligible class or section (optional)</label><input name="classes" placeholder="For example: 3rd Year, Section B"></div></div><div class="form-actions"><button class="btn secondary" type="reset">Clear</button><button class="btn" type="submit">Publish event</button></div></form></div></div>`;
 }
 function newRequest() {
-  return `${head("New outside-college request", "Submit event details and registration proof before attending.")}<div class="panel"><div class="panel-head"><div><h2>Event and OD details</h2><p>Registration proof is required for initial review.</p></div></div><div class="panel-body"><form id="requestForm"><div class="form-grid"><div class="form-field"><label>Event name *</label><input name="event" required></div><div class="form-field"><label>Organizer *</label><input name="organizer" required></div><div class="form-field"><label>Start date *</label><input name="start" type="date" required></div><div class="form-field"><label>End date *</label><input name="end" type="date" required></div><div class="form-field full"><label>Venue or online details *</label><input name="venue" required></div><div class="form-field full"><label>Class sessions expected to miss *</label><textarea name="sessions" required placeholder="Enter dates and session numbers"></textarea></div><div class="form-field full"><label>Registration proof *</label><input type="file" name="proof" required accept=".pdf,.png,.jpg,.jpeg"><span class="hint">Registration screenshot, ticket, or confirmation email (PDF, PNG, JPG).</span></div></div><div class="notice">Class In-charge and Department Coordinator review this request before the event. Upload the certificate to this request after attending.</div><div class="form-actions"><button class="btn" type="submit">Submit for review</button></div></form></div></div>`;
+  return `${head("New outside-college request", "Submit the event plan and the sessions you expect to miss.")}<div class="panel"><div class="panel-head"><div><h2>Event and OD details</h2><p>Registration proof is required for the first review.</p></div></div><div class="panel-body"><form id="requestForm"><div class="form-grid"><div class="form-field"><label>Event name *</label><input name="event" required maxlength="180"></div><div class="form-field"><label>Organizer *</label><input name="organizer" required maxlength="180"></div><div class="form-field"><label>Start date *</label><input name="start" type="date" required></div><div class="form-field"><label>End date *</label><input name="end" type="date" required></div><div class="form-field full"><label>Venue or online details *</label><input name="venue" required maxlength="250" placeholder="Campus, city, or online platform"></div><div class="form-field full"><label>Class sessions expected to miss *</label><textarea name="sessions" required placeholder="One session per line: YYYY-MM-DD | course code | course name | period\n2026-11-18 | CS201 | Algorithms | 2"></textarea><span class="hint">Use one line for each class period. These are the sessions the DEO can record after approval.</span></div><div class="form-field full"><label>Registration proof *</label><input type="file" name="proof" required accept=".pdf,.png,.jpg,.jpeg,.webp"><span class="hint">Registration screenshot, ticket, or confirmation email (PDF, JPG, PNG, WEBP).</span></div></div><div class="notice">Class In-charge and Department Coordinator review the plan. After attending, attach the certificate to this same request for the Director.</div><div class="form-actions"><button class="btn" type="submit">Submit request</button></div></form></div></div>`;
 }
 function myEvents() {
   return `${head("My Events", "Inter-college events created and managed by you.", '<button class="btn" data-page="Create Event">＋ Create event</button>')}<div class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Event</th><th>Host college</th><th>Dates</th><th>Eligible audience</th><th>Registrations</th></tr></thead><tbody>${data.events.map((e) => `<tr><td><strong>${esc(e.name)}</strong><small>${esc(e.category)}</small></td><td>${esc(e.host)}</td><td>${esc(e.dates)}</td><td>${esc(e.eligibility)}</td><td>${e.registered}</td></tr>`).join("")}</tbody></table></div></div>`;
@@ -245,7 +254,8 @@ function attendance() {
   let rows = data.requests.filter(
     (r) =>
       r.status === "Attendance Recorded" &&
-      (role !== "Student" || r.student === who()),
+      (role !== "Student" || r.student === who()) &&
+      (role !== "DEO" || !apiMode || !!r.attendanceEntry),
   );
   return `${head(role === "Student" ? "My Attendance" : "Attendance History", "Attendance entries recorded by the DEO are added to the student record.")}<div class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Event</th><th>Student</th><th>Sessions</th><th>Attendance</th><th>Record</th></tr></thead><tbody>${rows.map((r) => `<tr><td><strong>${esc(r.event)}</strong><small>${esc(r.id)} · ${esc(r.type)}</small></td><td><strong>${esc(r.student)}</strong><small>${esc(r.roll)}</small></td><td>${esc(r.sessions)}</td><td>${badge(r.attendance || "Present")}</td><td>${esc(r.history.at(-1)?.[1] || "Recorded")}</td></tr>`).join("") || '<tr><td colspan="5"><div class="empty">No attendance has been recorded yet.</div></td></tr>'}</tbody></table></div></div>`;
 }
@@ -259,7 +269,7 @@ function registrations() {
     .join("")}</tbody></table></div></div>`;
 }
 function profile() {
-  return `${head("Profile", "Your account and role information.")}<div class="panel"><div class="panel-body"><div class="detail-grid"><div><span class="field-label">Name</span><div class="field-value">${esc(who())}</div></div><div><span class="field-label">Role</span><div class="field-value">${esc(role)}</div></div><div><span class="field-label">Department / office</span><div class="field-value">${esc(people[role][1])}</div></div><div><span class="field-label">Access</span><div class="field-value">Role-based prototype</div></div></div><div class="notice">Sign out from the top bar to choose another workspace.</div></div></div>`;
+  return `${head("Profile", "Account details used to route your requests and review access.")}<div class="panel"><div class="panel-body"><div class="detail-grid"><div><span class="field-label">Name</span><div class="field-value">${esc(who())}</div></div><div><span class="field-label">Role</span><div class="field-value">${esc(role)}</div></div><div><span class="field-label">Department / class</span><div class="field-value">${esc(currentUser ? [currentUser.department, currentUser.classSection].filter(Boolean).join(" · ") : people[role]?.[1])}</div></div><div><span class="field-label">Environment</span><div class="field-value">${apiMode ? "College account" : "Sample data preview"}</div></div></div><div class="notice">${apiMode ? "Your role and department are managed by the college administrator." : "Preview changes stay in this browser and are not submitted for approval."}</div></div></div>`;
 }
 function timeline(r) {
   let flow =
@@ -346,7 +356,7 @@ function requestDetail(r) {
     )
     .join(
       "",
-    )}</div></div><div class="detail-section"><h3>Uploaded files</h3>${r.proof ? `<div class="list-row"><span>▧</span><div class="row-main"><strong>Registration proof</strong><small>${esc(r.proof)}</small></div>${badge("Uploaded")}</div>` : ""}<div class="list-row"><span>▧</span><div class="row-main"><strong>Event certificate</strong><small>${esc(r.certificate || "Not uploaded")}</small></div>${
+    )}</div></div><div class="detail-section"><h3>Uploaded files</h3>${r.proof ? `<div class="list-row"><span>▧</span><div class="row-main"><strong>Registration proof</strong><small>${esc(r.proof)}</small></div>${apiMode && r.proofId ? `<button class="btn secondary small" data-download-file="${r.id}:${r.proofId}" data-filename="${esc(r.proof)}">Download</button>` : badge("Attached")}</div>` : ""}<div class="list-row"><span>▧</span><div class="row-main"><strong>Event certificate</strong><small>${esc(r.certificate || "Not uploaded")}</small></div>${r.certificate && apiMode && r.certificateId ? `<button class="btn secondary small" data-download-file="${r.id}:${r.certificateId}" data-filename="${esc(r.certificate)}">Download</button>` : ""}${
     !r.certificate && student && (cert || interCert)
       ? `<button class="btn small" data-upload-cert="${r.id}">Upload</button>`
       : ""
@@ -382,7 +392,7 @@ function requestDetail(r) {
       : ""
   }${
     deo
-      ? `<div class="detail-section"><div class="decision-box"><h3>Record attendance</h3><p>All required approvals are complete.</p><select id="attendanceValue" class="filter"><option>Present</option><option>Partial attendance</option></select> <button class="btn success" data-record-attendance="${
+      ? `<div class="detail-section"><div class="decision-box"><h3>Record attendance</h3><p>All required approvals are complete. Select the sessions this record should cover.</p>${apiMode ? (r.sessionItems || []).map(s => `<label class="session-choice"><input type="checkbox" name="sessionChoice" value="${esc(s.id)}"><span>${esc(s.label)}</span></label>`).join("") : '<select id="attendanceValue" class="filter"><option>Present</option><option>Partial attendance</option></select>'}<div class="form-field" style="margin-top:12px"><label>DEO note (optional)</label><input id="attendanceNote" maxlength="1000"></div><button class="btn success" data-record-attendance="${
           r.id
         }">Save attendance</button></div></div>`
       : ""

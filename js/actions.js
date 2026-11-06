@@ -2,6 +2,28 @@
 function closeMenu() {
   $("#sidebar").classList.remove("open");
 }
+async function refreshFromApi() {
+  const loaded = await api.loadWorkspace(currentUser);
+  data.events = loaded.events;
+  data.requests = loaded.requests;
+}
+function parseMissedSessions(text) {
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (!lines.length) throw new Error("Add at least one missed class session.");
+  return lines.map((line, index) => {
+    const [date, courseCode = "", courseName = "", period = ""] = line.split("|").map(part => part.trim());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || "") || Number.isNaN(new Date(`${date}T00:00:00`).getTime())) {
+      throw new Error(`Line ${index + 1}: use YYYY-MM-DD | course code | course name | period.`);
+    }
+    return { date: new Date(`${date}T00:00:00`).toISOString(), courseCode, courseName, period };
+  });
+}
+function sessionTextFromRequest(r) {
+  return (r.rawSessions || []).map(s => [String(s.date).slice(0, 10), s.courseCode || "", s.courseName || "", s.period || ""].join(" | ")).join("\n");
+}
+function fileForm(json, file, field = "request") {
+  const form = new FormData(); form.append(field, JSON.stringify(json)); if (file) form.append("file", file); return form;
+}
 $("#menuBtn").onclick = () => $("#sidebar").classList.add("open");
 $("#closeNav").onclick = closeMenu;
 // Route navigation and buttons through delegated handlers because page content
@@ -23,6 +45,12 @@ document.addEventListener("click", (e) => {
     activeId = o.dataset.open;
     render();
     scrollTo(0, 0);
+    return;
+  }
+  let fileLink = e.target.closest("[data-download-file]");
+  if (fileLink) {
+    const [requestId, fileId] = fileLink.dataset.downloadFile.split(":");
+    api.download(`/requests/${encodeURIComponent(requestId)}/files/${encodeURIComponent(fileId)}`, fileLink.dataset.filename).catch(error => toast(error.message));
     return;
   }
   let ev = e.target.closest("[data-event]");
@@ -76,13 +104,23 @@ document.addEventListener("change", (e) => {
   }
 });
 // Create events and outside-college requests from their forms.
-document.addEventListener("submit", (e) => {
+document.addEventListener("submit", async (e) => {
   if (e.target.id === "requestForm") {
     e.preventDefault();
     let f = new FormData(e.target),
       file = f.get("proof");
     if (!file?.name) {
       toast("Attach registration proof to submit.");
+      return;
+    }
+    if (apiMode) {
+      try {
+        const sessions = parseMissedSessions(f.get("sessions"));
+        const body = { eventName: f.get("event"), organizer: f.get("organizer"), startAt: new Date(`${f.get("start")}T00:00:00`).toISOString(), endAt: new Date(`${f.get("end")}T23:59:59`).toISOString(), venue: f.get("venue"), isOnline: /^online/i.test(f.get("venue")), missedSessions: sessions };
+        const form = fileForm(body, file);
+        const result = await api.request("/requests/outside", { method: "POST", body: form });
+        await refreshFromApi(); page = "My OD Requests"; activeId = result.data.request._id; render(); toast("Request sent to your Class In-charge.");
+      } catch (error) { toast(error.message); }
       return;
     }
     let id = "OD-" + (26042 + data.requests.length),
@@ -132,6 +170,19 @@ document.addEventListener("submit", (e) => {
         }),
       s = f.get("start"),
       z = f.get("end");
+    if (apiMode) {
+      if (z < s) { toast("End date must be on or after the start date."); return; }
+      try {
+        const departments = f.getAll("departments");
+        const classList = String(f.get("classes") || "").split(",").map(x => x.trim()).filter(Boolean);
+        const result = await api.request("/events", { method: "POST", body: JSON.stringify({
+          name: f.get("name"), hostCollege: f.get("host"), startAt: new Date(`${s}T00:00:00`).toISOString(), endAt: new Date(`${z}T23:59:59`).toISOString(), venue: f.get("venue"),
+          registrationDetails: f.get("registration"), category: f.get("category"), eligibleDepartments: departments, eligibleClasses: classList, status: "published"
+        }) });
+        await refreshFromApi(); page = "My Events"; activeId = null; render(); toast("Event published for eligible students.");
+      } catch (error) { toast(error.message); }
+      return;
+    }
     data.events.unshift({
       id: "ev" + Date.now(),
       name: f.get("name"),
@@ -151,9 +202,17 @@ document.addEventListener("submit", (e) => {
   }
 });
 // Workflow actions: register, review, record attendance, and upload evidence.
-function registerEvent(id) {
+async function registerEvent(id) {
   let e = data.events.find((x) => x.id === id);
   if (!e) return;
+  if (apiMode) {
+    try {
+      const result = await api.request(`/events/${encodeURIComponent(id)}/register`, { method: "POST" });
+      await refreshFromApi(); page = "My OD Requests"; activeId = result.data.request._id; render();
+      toast("Registration saved. Upload the certificate after attending.");
+    } catch (error) { toast(error.message); }
+    return;
+  }
   if (data.requests.some((r) => r.student === who() && r.event === e.name)) {
     toast("You already have a request for this event.");
     return;
@@ -224,7 +283,17 @@ function decide(id, action) {
       true,
     );
 }
-function finish(r, action, note) {
+async function finish(r, action, note) {
+  if (apiMode) {
+    try {
+      const decision = action === "approve" ? "approved" : action === "reject" ? "rejected" : "returned_for_correction";
+      await api.request(`/requests/${encodeURIComponent(r.backendId || r.id)}/reviews`, { method: "POST", body: JSON.stringify({ action: decision, comment: note }) });
+      await refreshFromApi(); activeId = null; render();
+      $("#modalRoot").innerHTML = "";
+      toast(action === "approve" ? "Approval recorded." : action === "reject" ? "Request rejected." : "Request returned with correction instructions.");
+    } catch (error) { toast(error.message); }
+    return;
+  }
   let actor =
       role === "Class In-charge"
         ? "Class In-charge"
@@ -278,7 +347,15 @@ function record(id) {
     "Record attendance",
     `<p class="subhead">Record <strong>${esc(value)}</strong> for ${esc(r.student)} · ${esc(r.event)}. This updates the student attendance record.</p>`,
     "Confirm attendance",
-    () => {
+    async () => {
+      if (apiMode) {
+        const sessionIds = [...document.querySelectorAll('input[name="sessionChoice"]:checked')].map(x => x.value);
+        try {
+          await api.request(`/requests/${encodeURIComponent(r.backendId || r.id)}/attendance`, { method: "POST", body: JSON.stringify({ sessionIds, note: $("#attendanceNote")?.value || "" }) });
+          await refreshFromApi(); $("#modalRoot").innerHTML = ""; render(); toast("Attendance recorded for the selected sessions.");
+        } catch (error) { toast(error.message); }
+        return;
+      }
       r.status = "Attendance Recorded";
       r.attendance = value;
       r.history.push([
@@ -296,12 +373,22 @@ function upload(id) {
   let r = data.requests.find((x) => x.id === id);
   modal(
     "Upload event certificate",
-    '<p class="subhead">Attach the certificate received after attending the event.</p><div class="form-field" style="margin-top:14px"><label>Certificate *</label><input type="file" id="certFile" accept=".pdf,.png,.jpg,.jpeg"></div>',
+    '<p class="subhead">Attach the certificate received after attending. Confirm the class periods that should receive OD attendance.</p><div class="form-field" style="margin-top:14px"><label>Certificate *</label><input type="file" id="certFile" accept=".pdf,.png,.jpg,.jpeg,.webp"></div><div class="form-field" style="margin-top:12px"><label>Missed class sessions *</label><textarea id="certSessions" rows="4" placeholder="YYYY-MM-DD | course code | course name | period"></textarea><span class="hint">One class period per line. For an outside event, the submitted sessions are prefilled.</span></div>',
     "Upload certificate",
-    () => {
+    async () => {
       let f = $("#certFile").files[0];
       if (!f) {
         toast("Select a certificate file.");
+        return;
+      }
+      if (apiMode) {
+        try {
+          const form = new FormData(); form.append("kind", "certificate"); form.append("file", f);
+          const text = $("#certSessions").value.trim();
+          if (text) form.append("missedSessions", JSON.stringify(parseMissedSessions(text)));
+          await api.request(`/requests/${encodeURIComponent(r.backendId || r.id)}/files`, { method: "POST", body: form });
+          await refreshFromApi(); $("#modalRoot").innerHTML = ""; activeId = r.id; render(); toast("Certificate added to this request.");
+        } catch (error) { toast(error.message); }
         return;
       }
       r.certificate = f.name;
@@ -323,17 +410,29 @@ function upload(id) {
 }
 function correct(id) {
   let r = data.requests.find((x) => x.id === id);
+  const correctionBody = apiMode
+    ? `<p class="subhead">Update the event details the reviewer flagged. Earlier review comments will remain in the history.</p><div class="form-grid"><div class="form-field"><label>Event name</label><input id="fixEvent" value="${esc(r.event)}"></div><div class="form-field"><label>Organizer</label><input id="fixOrganizer" value="${esc(r.organizer)}"></div><div class="form-field"><label>Start date</label><input id="fixStart" type="date" value="${esc((r.startAt || "").slice(0, 10))}"></div><div class="form-field"><label>End date</label><input id="fixEnd" type="date" value="${esc((r.endAt || "").slice(0, 10))}"></div><div class="form-field full"><label>Venue or online details</label><input id="fixVenue" value="${esc(r.venue)}"></div><div class="form-field full"><label>Missed class sessions</label><textarea id="fixSessions" rows="4">${esc(sessionTextFromRequest(r))}</textarea><span class="hint">One line per session: YYYY-MM-DD | course code | course name | period</span></div><div class="form-field full"><label>What did you correct? *</label><textarea id="correctionText" required></textarea></div><div class="form-field full"><label>Replacement registration proof (optional)</label><input type="file" id="replacement" accept=".pdf,.png,.jpg,.jpeg,.webp"></div></div>`
+    : '<p class="subhead">Describe the correction. You may attach updated registration proof.</p><div class="form-field" style="margin-top:12px"><label>Correction made *</label><textarea id="correctionText"></textarea></div><div class="form-field" style="margin-top:12px"><label>Replacement proof (optional)</label><input type="file" id="replacement" accept=".pdf,.png,.jpg,.jpeg"></div>';
   modal(
     "Update and resubmit",
-    '<p class="subhead">Describe the correction. You may attach updated registration proof.</p><div class="form-field" style="margin-top:12px"><label>Correction made *</label><textarea id="correctionText"></textarea></div><div class="form-field" style="margin-top:12px"><label>Replacement proof (optional)</label><input type="file" id="replacement" accept=".pdf,.png,.jpg,.jpeg"></div>',
+    correctionBody,
     "Resubmit",
-    () => {
+    async () => {
       let note = $("#correctionText").value.trim();
       if (!note) {
         toast("Describe the correction before resubmitting.");
         return;
       }
       let file = $("#replacement").files[0];
+      if (apiMode) {
+        try {
+          const start = $("#fixStart").value; const end = $("#fixEnd").value;
+          const body = { eventName: $("#fixEvent").value, organizer: $("#fixOrganizer").value, startAt: new Date(`${start}T00:00:00`).toISOString(), endAt: new Date(`${end}T23:59:59`).toISOString(), venue: $("#fixVenue").value, isOnline: /^online/i.test($("#fixVenue").value), missedSessions: parseMissedSessions($("#fixSessions").value), correctionNote: note };
+          await api.request(`/requests/${encodeURIComponent(r.backendId || r.id)}`, { method: "PATCH", body: fileForm(body, file) });
+          await refreshFromApi(); $("#modalRoot").innerHTML = ""; activeId = r.id; render(); toast("Request corrected and sent back to review.");
+        } catch (error) { toast(error.message); }
+        return;
+      }
       if (file) r.proof = file.name;
       r.reason = "";
       r.status =
@@ -354,95 +453,58 @@ function correct(id) {
     },
   );
 }
-render();
-
-// Demo sign-in entry screen with a role-specific ID/email field.
-function showLogin(form = false) {
-  const labels = {
-    Student: "Student portal · event registration and OD tracking",
-    "Event Coordinator": "Event publishing and registration oversight",
-    "Class In-charge": "First level request review",
-    "Department Coordinator": "Department request review",
-    Director: "Final approval review",
-    DEO: "Attendance recording",
-  };
-  const icons = {
-    Student: "S",
-    "Event Coordinator": "E",
-    "Class In-charge": "C",
-    "Department Coordinator": "D",
-    Director: "D",
-    DEO: "A",
-  };
-  const formHtml =
-    '<button class="btn ghost small auth-back" data-auth-back>← Choose another role</button><div class="eyebrow">SIGN IN TO YOUR WORKSPACE</div><h2>' +
-    esc(selectedLoginRole) +
-    ' sign in</h2><p class="subhead">Enter your ' +
-    (selectedLoginRole === "Student"
-      ? "student ID"
-      : selectedLoginRole === "DEO"
-        ? "staff ID"
-        : "institutional email") +
-    ' to continue.</p><form id="loginForm" class="auth-form"><div class="auth-form-grid"><div class="form-field"><label>' +
-    (selectedLoginRole === "Student"
-      ? "Student ID"
-      : selectedLoginRole === "DEO"
-        ? "Staff ID"
-        : "Institutional email") +
-    '</label><input name="username" required autocomplete="username" placeholder="' +
-    (selectedLoginRole === "Student" ? "e.g. 23CS041" : "name@college.edu") +
-    '"></div><div class="form-field"><label>Password</label><input name="password" type="password" required autocomplete="current-password" placeholder="Enter password"></div></div><div class="form-actions"><span class="auth-note">Demo access: any ID and password <b>demo123</b>.</span><button class="btn" type="submit">Sign in →</button></div></form>';
-  const chooser =
-    '<div class="eyebrow">SECURE WORKSPACE ACCESS</div><h2>Choose your role to sign in</h2><p class="subhead">Select the workspace assigned to your college account.</p><div class="role-grid">' +
-    roles
-      .map(
-        (r) =>
-          '<button class="role-card" data-auth-role="' +
-          esc(r) +
-          '"><span class="role-symbol">' +
-          icons[r] +
-          "</span><span><strong>" +
-          esc(r) +
-          "</strong><small>" +
-          labels[r] +
-          "</small></span></button>",
-      )
-      .join("") +
-    '</div><p class="auth-note" style="margin-top:15px">Prototype sign-in only. Authentication is not connected to a college identity service.</p>';
-  $("#loginScreen").innerHTML =
-    '<div class="auth-screen"><section class="auth-intro"><div class="auth-brand"><div class="brand-mark">C</div><div><strong>Campus OD</strong><small>Event & On-Duty</small></div></div><div class="auth-copy"><div class="eyebrow">COLLEGE EVENT SERVICES</div><h1>One clear path from event to attendance.</h1><p>Register for events, submit OD requests, review decisions, and record attendance in one place.</p></div><div class="auth-foot">Role-based access · Event and OD workflow</div></section><section class="auth-main"><div class="auth-inner">' +
-    (form ? formHtml : chooser) +
-    "</div></section></div>";
+// Real sign-in derives the role from the server. Demo access is kept separate
+// so it can never be mistaken for an authenticated college account.
+function showLogin() {
+  const demoOptions = roles.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join("");
+  $("#loginScreen").innerHTML = `<div class="auth-screen"><section class="auth-intro"><div class="auth-brand"><div class="brand-mark">C</div><div><strong>Campus OD</strong><small>Event & On-Duty</small></div></div><div class="auth-copy"><div class="eyebrow">COLLEGE EVENT SERVICES</div><h1>From event request to recorded attendance.</h1><p>One place for students to submit evidence and for staff to move each OD request through its assigned review step.</p></div><div class="auth-foot">Student services · Review workflow · Attendance record</div></section><section class="auth-main"><div class="auth-inner"><div class="eyebrow">COLLEGE ACCOUNT</div><h2>Sign in</h2><p class="subhead">Your account determines which requests and actions you can access.</p><form id="loginForm" class="auth-form"><div class="auth-form-grid"><div class="form-field"><label>College email</label><input name="email" type="email" required autocomplete="username" placeholder="name@college.edu"></div><div class="form-field"><label>Password</label><input name="password" type="password" required autocomplete="current-password" placeholder="Your account password"></div></div><div class="form-actions"><span class="auth-note">Access is managed by your college administrator.</span><button class="btn" type="submit">Sign in →</button></div></form><details class="demo-access"><summary>Preview the interface with sample records</summary><p class="auth-note">Preview data stays in this browser and does not submit to the backend.</p><div class="demo-row"><select id="demoRole" class="filter">${demoOptions}</select><button class="btn secondary" type="button" data-demo-login>Open preview</button></div></details></div></section></div>`;
 }
-document.addEventListener("click", (e) => {
-  const choice = e.target.closest("[data-auth-role]");
-  if (choice) {
-    selectedLoginRole = choice.dataset.authRole;
-    showLogin(true);
+
+async function loadLiveWorkspace() {
+  const result = await api.loadWorkspace(currentUser);
+  data.events = result.events;
+  data.requests = result.requests;
+}
+
+document.addEventListener("click", async (e) => {
+  if (e.target.closest("[data-demo-login]")) {
+    role = $("#demoRole").value;
+    apiMode = false; currentUser = null;
+    sessionStorage.removeItem("campusOD.token"); sessionStorage.removeItem("campusOD.user");
+    loggedIn = true; sessionStorage.setItem("campusOD.role", role); sessionStorage.setItem("campusOD.signedIn", "yes");
+    page = "Dashboard"; activeId = null; render();
   }
-  if (e.target.closest("[data-auth-back]")) showLogin(false);
 });
-document.addEventListener("submit", (e) => {
+document.addEventListener("submit", async (e) => {
   if (e.target.id !== "loginForm") return;
-  e.preventDefault();
-  const f = new FormData(e.target);
-  if (f.get("password") !== "demo123") {
-    toast("For this prototype, enter demo123 as the password.");
-    return;
-  }
-  role = selectedLoginRole;
-  loggedIn = true;
-  sessionStorage.setItem("campusOD.role", role);
-  sessionStorage.setItem("campusOD.signedIn", "yes");
-  page = "Dashboard";
-  activeId = null;
-  render();
+  e.preventDefault(); const form = new FormData(e.target);
+  const submit = e.target.querySelector('button[type="submit"]'); submit.disabled = true; submit.textContent = "Signing in…";
+  try {
+    const result = await api.request("/auth/login", { method: "POST", body: JSON.stringify({ email: form.get("email"), password: form.get("password") }) });
+    sessionStorage.setItem("campusOD.token", result.data.token);
+    currentUser = result.data.user; sessionStorage.setItem("campusOD.user", JSON.stringify(currentUser));
+    role = apiRoleToUi[currentUser.role];
+    if (!role) throw new Error("This account role is not supported in the web interface.");
+    people[role] = [currentUser.name, [currentUser.department, currentUser.classSection].filter(Boolean).join(" · ") || "College account"];
+    sessionStorage.setItem("campusOD.role", role); sessionStorage.removeItem("campusOD.signedIn");
+    apiMode = true; loggedIn = true; page = "Dashboard"; activeId = null;
+    render();
+    try { await loadLiveWorkspace(); render(); }
+    catch (error) { toast(`Signed in, but the workspace could not load: ${error.message}`); }
+  } catch (error) { toast(error.message || "Could not sign in."); submit.disabled = false; submit.textContent = "Sign in →"; }
+});
+window.addEventListener("campusod:session-expired", () => {
+  if (!apiMode) return;
+  loggedIn = false; apiMode = false; currentUser = null;
+  ["campusOD.token", "campusOD.user", "campusOD.role", "campusOD.signedIn"].forEach(key => sessionStorage.removeItem(key));
+  page = "Dashboard"; activeId = null; render();
+  toast("Your college session expired. Sign in again to continue.");
 });
 $("#logoutBtn").addEventListener("click", () => {
-  loggedIn = false;
-  sessionStorage.removeItem("campusOD.signedIn");
-  sessionStorage.removeItem("campusOD.role");
-  page = "Dashboard";
-  activeId = null;
-  render();
+  loggedIn = false; apiMode = false; currentUser = null;
+  ["campusOD.signedIn", "campusOD.role", "campusOD.token", "campusOD.user"].forEach(key => sessionStorage.removeItem(key));
+  page = "Dashboard"; activeId = null; render();
 });
+
+render();
+if (apiMode && loggedIn) loadLiveWorkspace().then(render).catch(error => toast(`Could not load your workspace: ${error.message}`));
