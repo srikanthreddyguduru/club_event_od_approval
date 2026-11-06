@@ -20,7 +20,6 @@ const people = {
   "Department Coordinator": ["Dr. K. Suresh", "Computer Science"],
   Director: ["Dr. R. Iyer", "Academic Office"],
   DEO: ["Latha Thomas", "Examination Office"],
-  Admin: ["Administrator", "Account administration"],
 };
 
 // Starter records used the first time the page is opened.
@@ -214,9 +213,7 @@ try {
 }
 let role = sessionStorage.getItem("campusOD.role") || "Student",
   selectedLoginRole = "Student",
-  currentUser = (() => { try { return JSON.parse(sessionStorage.getItem("campusOD.user") || "null"); } catch { return null; } })(),
-  apiMode = !!sessionStorage.getItem("campusOD.token"),
-  loggedIn = apiMode ? !!currentUser : sessionStorage.getItem("campusOD.signedIn") === "yes",
+  loggedIn = sessionStorage.getItem("campusOD.signedIn") === "yes",
   page = "Dashboard",
   search = "",
   filter = "All",
@@ -236,7 +233,7 @@ const $ = (s) => document.querySelector(s),
         })[c],
     );
 function save() {
-  if (!apiMode) localStorage.setItem("campusOD.v1", JSON.stringify(data));
+  localStorage.setItem("campusOD.v1", JSON.stringify(data));
 }
 function initials(s) {
   return s
@@ -328,13 +325,10 @@ const menus = {
     ],
     ["ACCOUNT", [["Profile", "○"]]],
   ],
-  Admin: [
-    ["ACCOUNT", [["Dashboard", "◫"], ["Profile", "○"]]],
-  ],
 };
 // Shared labels and UI helpers.
 function who() {
-  return currentUser?.name || people[role]?.[0] || "Administrator";
+  return people[role][0];
 }
 function mine() {
   if (role === "Student")
